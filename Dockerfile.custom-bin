@@ -1,0 +1,13 @@
+FROM alpine:3.20
+
+# Keep runtime environment close to upstream image behavior.
+RUN set -eux; \
+    if [ ! -e /etc/nsswitch.conf ]; then echo 'hosts: files dns' > /etc/nsswitch.conf; fi; \
+    apk upgrade; \
+    apk add --no-cache bash tzdata ca-certificates
+
+COPY build/hysteria-linux-amd64 /usr/local/bin/hysteria
+
+RUN chmod +x /usr/local/bin/hysteria
+
+ENTRYPOINT ["hysteria"]
