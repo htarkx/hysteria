@@ -48,6 +48,7 @@ func TestClientConfig(t *testing.T) {
 			MaxIdleTimeout:              10 * time.Second,
 			KeepAlivePeriod:             4 * time.Second,
 			DisablePathMTUDiscovery:     true,
+			UDPFragmentation:            true,
 			Sockopts: clientConfigQUICSockopts{
 				BindInterface:       stringRef("eth0"),
 				FirewallMark:        uint32Ref(1234),

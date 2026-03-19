@@ -155,7 +155,7 @@ func (c *clientImpl) connect() (*HandshakeInfo, error) {
 	c.pktConn = pktConn
 	c.conn = conn
 	if authResp.UDPEnabled {
-		c.udpSM = newUDPSessionManager(&udpIOImpl{Conn: conn})
+		c.udpSM = newUDPSessionManager(&udpIOImpl{Conn: conn}, c.config.QUICConfig.UDPFragmentation)
 	}
 	return &HandshakeInfo{
 		UDPEnabled: authResp.UDPEnabled,

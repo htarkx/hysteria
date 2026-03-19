@@ -33,6 +33,7 @@ type udpSessionEntry struct {
 	ID           uint32
 	OverrideAddr string // Ignore the address in the UDP message, always use this if not empty
 	OriginalAddr string // The original address in the UDP message
+	AutoFrag     bool
 	D            *frag.Defragger
 	Last         *utils.AtomicTime
 	IO           udpIO
@@ -47,14 +48,16 @@ type udpSessionEntry struct {
 
 func newUDPSessionEntry(
 	id uint32, io udpIO,
+	autoFrag bool,
 	dialFunc func(string, []byte) (UDPConn, string, error),
 	exitFunc func(error),
 ) (e *udpSessionEntry) {
 	e = &udpSessionEntry{
-		ID:   id,
-		D:    &frag.Defragger{},
-		Last: utils.NewAtomicTime(time.Now()),
-		IO:   io,
+		ID:       id,
+		AutoFrag: autoFrag,
+		D:        &frag.Defragger{},
+		Last:     utils.NewAtomicTime(time.Now()),
+		IO:       io,
 
 		DialFunc: dialFunc,
 		ExitFunc: exitFunc,
@@ -175,7 +178,7 @@ func (e *udpSessionEntry) receiveLoop() {
 			Addr:      rAddr,
 			Data:      udpBuf[:udpN],
 		}
-		err = sendMessageAutoFrag(e.IO, msgBuf, msg)
+		err = sendMessageAutoFrag(e.IO, msgBuf, msg, e.AutoFrag)
 		if err != nil {
 			e.CloseWithErr(err)
 			return
@@ -186,10 +189,14 @@ func (e *udpSessionEntry) receiveLoop() {
 // sendMessageAutoFrag tries to send a UDP message as a whole first,
 // but if it fails due to quic.ErrMessageTooLarge, it tries again by
 // fragmenting the message.
-func sendMessageAutoFrag(io udpIO, buf []byte, msg *protocol.UDPMessage) error {
+func sendMessageAutoFrag(io udpIO, buf []byte, msg *protocol.UDPMessage, autoFrag bool) error {
 	err := io.SendMessage(buf, msg)
 	var errTooLarge *quic.DatagramTooLargeError
 	if errors.As(err, &errTooLarge) {
+		if !autoFrag {
+			// Best practice mode: drop oversized datagrams instead of fragmenting.
+			return nil
+		}
 		// Message too large, try fragmentation
 		msg.PacketID = uint16(rand.Intn(0xFFFF)) + 1
 		fMsgs := frag.FragUDPMessage(msg, int(errTooLarge.MaxDatagramPayloadSize))
@@ -214,16 +221,18 @@ type udpSessionManager struct {
 	io          udpIO
 	eventLogger udpEventLogger
 	idleTimeout time.Duration
+	autoFrag    bool
 
 	mutex sync.RWMutex
 	m     map[uint32]*udpSessionEntry
 }
 
-func newUDPSessionManager(io udpIO, eventLogger udpEventLogger, idleTimeout time.Duration) *udpSessionManager {
+func newUDPSessionManager(io udpIO, eventLogger udpEventLogger, idleTimeout time.Duration, autoFrag bool) *udpSessionManager {
 	return &udpSessionManager{
 		io:          io,
 		eventLogger: eventLogger,
 		idleTimeout: idleTimeout,
+		autoFrag:    autoFrag,
 		m:           make(map[uint32]*udpSessionEntry),
 	}
 }
@@ -307,7 +316,7 @@ func (m *udpSessionManager) feed(msg *protocol.UDPMessage) {
 			m.mutex.Unlock()
 		}
 
-		entry = newUDPSessionEntry(msg.SessionID, m.io, dialFunc, exitFunc)
+		entry = newUDPSessionEntry(msg.SessionID, m.io, m.autoFrag, dialFunc, exitFunc)
 
 		// Insert the session into the map
 		m.mutex.Lock()

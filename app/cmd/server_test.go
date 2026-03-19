@@ -67,6 +67,7 @@ func TestServerConfig(t *testing.T) {
 			MaxIdleTimeout:              999 * time.Second,
 			MaxIncomingStreams:          256,
 			DisablePathMTUDiscovery:     true,
+			UDPFragmentation:            true,
 		},
 		Bandwidth: serverConfigBandwidth{
 			Up:   "500 mbps",

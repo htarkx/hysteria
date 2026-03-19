@@ -42,6 +42,7 @@ quic:
   maxIdleTimeout: 999s
   maxIncomingStreams: 256
   disablePathMTUDiscovery: true
+  udpFragmentation: true
 
 bandwidth:
   up: 500 mbps

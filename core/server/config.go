@@ -114,6 +114,7 @@ type QUICConfig struct {
 	MaxIdleTimeout                 time.Duration
 	MaxIncomingStreams             int64
 	DisablePathMTUDiscovery        bool // The server may still override this to true on unsupported platforms.
+	UDPFragmentation               bool // If false, oversized QUIC datagrams are silently dropped instead of fragmented.
 }
 
 // RequestHook allows filtering and modifying requests before the server connects to the remote.

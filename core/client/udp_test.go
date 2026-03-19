@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/apernet/quic-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"go.uber.org/goleak"
@@ -24,7 +25,7 @@ func TestUDPSessionManager(t *testing.T) {
 		}
 		return m, nil
 	})
-	sm := newUDPSessionManager(io)
+	sm := newUDPSessionManager(io, false)
 
 	// Test UDP session IO
 	udpConn1, err := sm.NewUDP()
@@ -119,4 +120,52 @@ func TestUDPSessionManager(t *testing.T) {
 	time.Sleep(1 * time.Second)
 	assert.Zero(t, sm.Count(), "session count should be 0")
 	goleak.VerifyNone(t)
+}
+
+func TestUDPConnSendDropsOversizedDatagramWhenAutoFragDisabled(t *testing.T) {
+	sendCount := 0
+	conn := &udpConn{
+		ID:       1,
+		SendBuf:  make([]byte, protocol.MaxUDPSize),
+		AutoFrag: false,
+		SendFunc: func([]byte, *protocol.UDPMessage) error {
+			sendCount++
+			if sendCount == 1 {
+				return &quic.DatagramTooLargeError{MaxDatagramPayloadSize: 32}
+			}
+			return errors.New("unexpected retry when auto fragmentation is disabled")
+		},
+	}
+
+	err := conn.Send([]byte("abcdefghijklmnopqrstuvwxyz0123456789"), "drop.test:53")
+	assert.NoError(t, err)
+	assert.Equal(t, 1, sendCount)
+}
+
+func TestUDPConnSendFragmentsOversizedDatagramWhenAutoFragEnabled(t *testing.T) {
+	sendCount := 0
+	var frags []protocol.UDPMessage
+	conn := &udpConn{
+		ID:       1,
+		SendBuf:  make([]byte, protocol.MaxUDPSize),
+		AutoFrag: true,
+		SendFunc: func(_ []byte, msg *protocol.UDPMessage) error {
+			sendCount++
+			if sendCount == 1 {
+				return &quic.DatagramTooLargeError{MaxDatagramPayloadSize: 40}
+			}
+			cp := *msg
+			cp.Data = append([]byte(nil), msg.Data...)
+			frags = append(frags, cp)
+			return nil
+		},
+	}
+
+	err := conn.Send([]byte("abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"), "frag.test:53")
+	assert.NoError(t, err)
+	assert.Greater(t, len(frags), 1)
+	for _, fragMsg := range frags {
+		assert.Greater(t, fragMsg.PacketID, uint16(0))
+		assert.Equal(t, uint8(len(frags)), fragMsg.FragCount)
+	}
 }

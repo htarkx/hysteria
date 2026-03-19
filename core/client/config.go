@@ -105,6 +105,7 @@ type QUICConfig struct {
 	MaxIdleTimeout                 time.Duration
 	KeepAlivePeriod                time.Duration
 	DisablePathMTUDiscovery        bool // The server may still override this to true on unsupported platforms.
+	UDPFragmentation               bool // If false, oversized QUIC datagrams are silently dropped instead of fragmented.
 }
 
 // BandwidthConfig describes the maximum bandwidth that the server can use, in bytes per second.

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/apernet/quic-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"go.uber.org/goleak"
@@ -15,7 +16,7 @@ import (
 func TestUDPSessionManager(t *testing.T) {
 	io := newMockUDPIO(t)
 	eventLogger := newMockUDPEventLogger(t)
-	sm := newUDPSessionManager(io, eventLogger, 2*time.Second)
+	sm := newUDPSessionManager(io, eventLogger, 2*time.Second, false)
 
 	msgCh := make(chan *protocol.UDPMessage, 4)
 	io.EXPECT().ReceiveMessage().RunAndReturn(func() (*protocol.UDPMessage, error) {
@@ -188,4 +189,78 @@ func TestUDPSessionManager(t *testing.T) {
 	time.Sleep(1 * time.Second) // Wait one more second just to be sure
 	assert.Zero(t, sm.Count(), "session count should be 0")
 	goleak.VerifyNone(t)
+}
+
+type testSendOnlyUDPIO struct {
+	sendFunc func([]byte, *protocol.UDPMessage) error
+}
+
+func (io *testSendOnlyUDPIO) ReceiveMessage() (*protocol.UDPMessage, error) {
+	return nil, errors.New("unused")
+}
+
+func (io *testSendOnlyUDPIO) SendMessage(buf []byte, msg *protocol.UDPMessage) error {
+	return io.sendFunc(buf, msg)
+}
+
+func (io *testSendOnlyUDPIO) Hook([]byte, *string) error {
+	return errors.New("unused")
+}
+
+func (io *testSendOnlyUDPIO) UDP(string) (UDPConn, error) {
+	return nil, errors.New("unused")
+}
+
+func TestSendMessageAutoFragDropsOversizedDatagramWhenAutoFragDisabled(t *testing.T) {
+	sendCount := 0
+	io := &testSendOnlyUDPIO{
+		sendFunc: func([]byte, *protocol.UDPMessage) error {
+			sendCount++
+			if sendCount == 1 {
+				return &quic.DatagramTooLargeError{MaxDatagramPayloadSize: 32}
+			}
+			return errors.New("unexpected retry when auto fragmentation is disabled")
+		},
+	}
+	msg := &protocol.UDPMessage{
+		SessionID: 1,
+		FragCount: 1,
+		Addr:      "drop.test:53",
+		Data:      []byte("abcdefghijklmnopqrstuvwxyz0123456789"),
+	}
+
+	err := sendMessageAutoFrag(io, make([]byte, protocol.MaxUDPSize), msg, false)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, sendCount)
+}
+
+func TestSendMessageAutoFragFragmentsOversizedDatagramWhenAutoFragEnabled(t *testing.T) {
+	sendCount := 0
+	var frags []protocol.UDPMessage
+	io := &testSendOnlyUDPIO{
+		sendFunc: func(_ []byte, msg *protocol.UDPMessage) error {
+			sendCount++
+			if sendCount == 1 {
+				return &quic.DatagramTooLargeError{MaxDatagramPayloadSize: 40}
+			}
+			cp := *msg
+			cp.Data = append([]byte(nil), msg.Data...)
+			frags = append(frags, cp)
+			return nil
+		},
+	}
+	msg := &protocol.UDPMessage{
+		SessionID: 1,
+		FragCount: 1,
+		Addr:      "frag.test:53",
+		Data:      []byte("abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
+	}
+
+	err := sendMessageAutoFrag(io, make([]byte, protocol.MaxUDPSize), msg, true)
+	assert.NoError(t, err)
+	assert.Greater(t, len(frags), 1)
+	for _, fragMsg := range frags {
+		assert.Greater(t, fragMsg.PacketID, uint16(0))
+		assert.Equal(t, uint8(len(frags)), fragMsg.FragCount)
+	}
 }

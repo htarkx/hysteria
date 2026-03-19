@@ -27,6 +27,7 @@ type udpConn struct {
 	D         *frag.Defragger
 	ReceiveCh chan *protocol.UDPMessage
 	SendBuf   []byte
+	AutoFrag  bool
 	SendFunc  func([]byte, *protocol.UDPMessage) error
 	CloseFunc func()
 	Closed    bool
@@ -62,6 +63,10 @@ func (u *udpConn) Send(data []byte, addr string) error {
 	err := u.SendFunc(u.SendBuf, msg)
 	var errTooLarge *quic.DatagramTooLargeError
 	if errors.As(err, &errTooLarge) {
+		if !u.AutoFrag {
+			// Best practice mode: drop oversized datagrams instead of fragmenting.
+			return nil
+		}
 		// Message too large, try fragmentation
 		msg.PacketID = uint16(rand.Intn(0xFFFF)) + 1
 		fMsgs := frag.FragUDPMessage(msg, int(errTooLarge.MaxDatagramPayloadSize))
@@ -85,6 +90,8 @@ func (u *udpConn) Close() error {
 type udpSessionManager struct {
 	io udpIO
 
+	autoFrag bool
+
 	mutex  sync.RWMutex
 	m      map[uint32]*udpConn
 	nextID uint32
@@ -92,11 +99,12 @@ type udpSessionManager struct {
 	closed bool
 }
 
-func newUDPSessionManager(io udpIO) *udpSessionManager {
+func newUDPSessionManager(io udpIO, autoFrag bool) *udpSessionManager {
 	m := &udpSessionManager{
-		io:     io,
-		m:      make(map[uint32]*udpConn),
-		nextID: 1,
+		io:       io,
+		autoFrag: autoFrag,
+		m:        make(map[uint32]*udpConn),
+		nextID:   1,
 	}
 	go m.run()
 	return m
@@ -158,6 +166,7 @@ func (m *udpSessionManager) NewUDP() (HyUDPConn, error) {
 		D:         &frag.Defragger{},
 		ReceiveCh: make(chan *protocol.UDPMessage, udpMessageChanSize),
 		SendBuf:   make([]byte, protocol.MaxUDPSize),
+		AutoFrag:  m.autoFrag,
 		SendFunc:  m.io.SendMessage,
 	}
 	conn.CloseFunc = func() {
